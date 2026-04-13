@@ -1,0 +1,17 @@
+{
+  "name": "116年全齡健康體育講座",
+  "short_name": "澎大體育",
+  "description": "國立澎湖科技大學全齡健康體育講座官方報名系統",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0B1120",
+  "theme_color": "#00E5FF",
+  "icons": [
+    {
+      "src": "澎科大.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
