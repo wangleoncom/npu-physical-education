@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>CMS Pro | Enterprise Edition</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800;900&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+
+    <style>
+        :root { --brand: #0f172a; --accent: #2563eb; --bg: #f8fafc; }
+        body { font-family: 'Inter', 'Noto Sans TC', sans-serif; background-color: var(--bg); color: var(--brand); -webkit-tap-highlight-color: transparent; }
+        
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        
+        .nav-btn { color: #64748b; transition: all 0.2s; border-left: 3px solid transparent; }
+        .nav-btn:hover { color: var(--brand); background: #f1f5f9; }
+        .nav-btn.active { color: var(--accent); background: #eff6ff; border-left-color: var(--accent); font-weight: 700; }
+        
+        .pro-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); }
+        .pro-input { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 0.75rem 1rem; width: 100%; font-size: 0.875rem; transition: all 0.2s; }
+        .pro-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); background: #fff; }
+        
+        #loader { position: fixed; inset: 0; background: #fff; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.4s ease; }
+        
+        /* Scanner App Specific Styles */
+        body.scanner-mode { background-color: #000; color: #fff; overflow: hidden; }
+        body.scanner-mode #app-layout { display: none !important; }
+        .bottom-sheet { transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); transform: translateY(100%); }
+        .bottom-sheet.open { transform: translateY(0); }
+        .scanner-tab-content { display: none; height: 100%; flex-direction: column; }
+        .scanner-tab-content.active { display: flex; }
+        .app-tab-btn { color: #64748b; transition: all 0.2s; }
+        .app-tab-btn.active { color: #38bdf8; }
+        
+        .glass-panel { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(16px); border-top: 1px solid rgba(255, 255, 255, 0.1); }
+        
+        #reader video { object-fit: cover !important; border-radius: 1.5rem; }
+    </style>
+</head>
+<body class="h-screen overflow-hidden flex flex-col antialiased selection:bg-blue-100">
+
+    <div id="loader">
+        <div class="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center text-white font-black text-2xl tracking-tighter shadow-xl">CP</div>
+        <div class="w-[200px] h-[3px] bg-slate-200 mt-6 rounded-full overflow-hidden"><div id="progress" class="h-full bg-slate-900 w-0 transition-all duration-300"></div></div>
+        <p class="mt-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Initializing CMS Pro Enterprise</p>
+    </div>
+
+    <div id="authSection" class="fixed inset-0 bg-slate-900/95 backdrop-blur-xl z-[2000] flex items-center justify-center p-4 transition-opacity duration-500">
+        <div class="bg-white p-8 md:p-12 w-full max-w-sm rounded-[2rem] shadow-2xl">
+            <h2 class="text-2xl font-black mb-1 text-slate-900 tracking-tight">系統登入</h2>
+            <p class="text-xs text-slate-500 font-medium mb-6">Authorized Personnel Only</p>
+            <form id="loginForm" class="space-y-4">
+                <input type="email" id="adminEmail" required class="pro-input" placeholder="管理員信箱">
+                <input type="password" id="adminPwd" required class="pro-input" placeholder="安全密碼">
+                <div>
+                    <select id="adminRole" class="pro-input font-bold text-slate-600 bg-slate-50 border-slate-200 cursor-pointer">
+                        <option value="admin">主管理系統</option>
+                        <option value="staff">副管理系統</option>
+                    </select>
+                </div>
+                <button type="submit" id="loginBtn" class="w-full bg-slate-900 text-white py-3.5 rounded-xl font-bold mt-2 hover:bg-slate-800 transition-colors">安全連線</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="app-layout" class="flex-1 flex flex-col md:flex-row overflow-hidden w-full h-full relative">
+        <header class="md:hidden flex items-center justify-between bg-slate-900 text-white p-4 z-[60] relative shadow-md shrink-0">
+            <div class="flex items-center gap-3"><div class="w-8 h-8 bg-white text-slate-900 rounded-lg flex items-center justify-center font-black text-xs">CP</div><span class="font-black text-sm tracking-tight">CMS PRO</span></div>
+            <button id="mobileMenuBtn" class="p-2 text-slate-300 hover:text-white focus:outline-none"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"></path></svg></button>
+        </header>
+
+        <div id="sidebarOverlay" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] hidden transition-opacity opacity-0 md:hidden"></div>
+
+        <aside id="sidebar" class="fixed md:relative inset-y-0 left-0 z-[80] w-64 bg-white border-r border-slate-200 flex flex-col transform -translate-x-full md:translate-x-0 transition-transform duration-300 ease-in-out shadow-2xl md:shadow-none h-full">
+            <div class="h-20 flex items-center px-6 border-b border-slate-100 gap-3 shrink-0">
+                <div class="w-8 h-8 bg-slate-900 rounded-lg flex items-center justify-center font-black text-white text-xs hidden md:flex">CP</div>
+                <div><h1 class="font-black text-sm tracking-tight text-slate-900 hidden md:block">CMS PRO</h1><p id="roleDisplay" class="text-[9px] text-emerald-500 font-bold uppercase tracking-widest">Admin</p></div>
+            </div>
+            <nav class="flex-1 py-4 space-y-1 overflow-y-auto custom-scrollbar px-3">
+                <button class="nav-btn active w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm" data-target="dashboard" data-roles="admin">📊 戰情中心</button>
+                <button class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm" data-target="users" data-roles="admin,staff">👥 名單與 CRM</button>
+                <button class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm" data-target="pairing" data-roles="admin,staff">📱 掃描與配對</button>
+                <button class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm" data-target="form-builder" data-roles="admin">📝 表單設計器</button>
+                <button class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm" data-target="raffle" data-roles="admin">🎁 進階抽獎</button>
+                <button class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm" data-target="logs" data-roles="admin">🛡️ 操作日誌</button>
+                <button class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm" data-target="settings" data-roles="admin">⚙️ 系統參數</button>
+            </nav>
+            <div class="p-4 border-t border-slate-100 shrink-0"><button id="logoutBtn" class="w-full text-left px-4 py-2 text-xs font-bold text-red-500 hover:bg-red-50 rounded-lg transition-colors">登出系統</button></div>
+        </aside>
+
+        <main class="flex-1 flex flex-col overflow-hidden relative bg-slate-50 md:bg-transparent">
+            <section id="view-dashboard" class="view-section flex-1 overflow-auto custom-scrollbar p-5 md:p-8 active">
+                <h2 class="text-2xl md:text-3xl font-black text-slate-900 tracking-tight mb-8">戰情中心</h2>
+                <div id="statsContainer" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"></div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6"><div class="pro-card p-6"><canvas id="categoryChart" height="220"></canvas></div><div class="pro-card p-6 flex justify-center"><div class="w-full max-w-[220px]"><canvas id="statusChart"></canvas></div></div></div>
+            </section>
+
+            <section id="view-users" class="view-section hidden flex-1 flex flex-col overflow-hidden p-5 md:p-8">
+                <div class="flex justify-between items-end mb-6">
+                    <h2 class="text-2xl md:text-3xl font-black text-slate-900 tracking-tight">名單與 CRM</h2>
+                    <button id="exportBtn" class="bg-emerald-50 text-emerald-600 px-4 py-2.5 rounded-lg font-bold text-sm hover:bg-emerald-100 transition-colors admin-only">📥 加密匯出 Excel</button>
+                </div>
+                <div class="flex flex-wrap gap-3 mb-4">
+                    <input type="text" id="userSearchInput" class="pro-input flex-1 min-w-[200px]" placeholder="搜尋姓名、電話、信箱...">
+                    <select id="filterStatus" class="pro-input w-auto min-w-[120px]"><option value="all">所有狀態</option><option value="正取">僅看正取</option></select>
+                    <div class="flex gap-2 admin-only">
+                        <select id="batchActionSelect" class="pro-input bg-blue-50 text-blue-700 w-auto"><option value="">批次操作...</option><option value="approve">✓ 批次轉正取</option></select>
+                        <button id="applyBatchBtn" class="bg-blue-600 text-white px-4 rounded-lg font-bold">執行</button>
+                    </div>
+                </div>
+                <div class="flex-1 pro-card overflow-hidden flex flex-col relative">
+                    <div class="overflow-x-auto custom-scrollbar flex-1 relative">
+                        <table class="w-full text-left text-sm whitespace-nowrap min-w-[600px]">
+                            <thead class="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                                <tr>
+                                    <th class="px-4 py-3 w-10"><input type="checkbox" id="selectAllCb" class="rounded w-4 h-4 accent-blue-600 admin-only"></th>
+                                    <th class="px-4 py-3 font-bold text-slate-500 text-xs">狀態</th>
+                                    <th class="px-4 py-3 font-bold text-slate-500 text-xs">姓名與聯絡</th>
+                                    <th class="px-4 py-3 font-bold text-slate-500 text-xs">多節點核銷狀態</th>
+                                    <th class="px-4 py-3 text-right">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dataTable" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section id="view-pairing" class="view-section hidden flex-1 overflow-auto custom-scrollbar p-5 md:p-8">
+                <h2 class="text-2xl md:text-3xl font-black text-slate-900 tracking-tight mb-8">掃描與設備配對</h2>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-5xl">
+                    <div class="pro-card p-8 border-t-4 border-t-blue-500 flex flex-col items-center text-center">
+                        <div class="w-16 h-16 bg-blue-50 text-blue-500 rounded-2xl flex items-center justify-center text-3xl mb-4">💻</div>
+                        <h3 class="text-xl font-black mb-2">啟動本機掃描</h3>
+                        <p class="text-xs text-slate-500 mb-6">使用這台設備的鏡頭直接進行多節點核銷。支援手動搜尋與切換任務。</p>
+                        <a href="?mode=scanner" target="_blank" class="w-full bg-blue-600 text-white py-4 rounded-xl font-black text-lg hover:bg-blue-700 block transition-colors">開啟本機掃描器</a>
+                    </div>
+                    <div class="pro-card p-8 border-t-4 border-t-slate-800 flex flex-col items-center text-center bg-slate-900 text-white relative overflow-hidden">
+                        <div class="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center text-3xl mb-4 relative z-10">📱</div>
+                        <h3 class="text-xl font-black mb-2 relative z-10">配對遠端掃描槍</h3>
+                        <p class="text-xs text-slate-400 mb-6 relative z-10">工讀生用手機掃描此 QR Code，手機將化身多功能行動掃描器。</p>
+                        <div class="bg-white p-4 rounded-2xl shadow-2xl relative z-10"><canvas id="pairingQRCanvas" class="w-48 h-48"></canvas></div>
+                        <div class="absolute w-[400px] h-[400px] border border-white/5 rounded-full top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="view-logs" class="view-section hidden flex-1 flex flex-col overflow-hidden p-5 md:p-8">
+                <h2 class="text-2xl md:text-3xl font-black text-slate-900 tracking-tight mb-6">🛡️ 操作軌跡日誌</h2>
+                <p class="text-xs text-slate-500 mb-4">系統記錄所有敏感操作，落實資安責信 (Accountability)。</p>
+                <div class="flex-1 pro-card overflow-hidden flex flex-col">
+                    <div class="overflow-y-auto custom-scrollbar flex-1 p-4 bg-slate-50 space-y-2" id="logsContainer"></div>
+                </div>
+            </section>
+
+            <section id="view-settings" class="view-section hidden flex-1 overflow-auto custom-scrollbar p-5 md:p-8">
+                <h2 class="text-2xl md:text-3xl font-black text-slate-900 tracking-tight mb-8">系統參數</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl">
+                    <div class="pro-card p-6">
+                        <h3 class="font-bold text-slate-900 text-sm mb-4">全域狀態控制</h3>
+                        <div class="flex items-center justify-between p-3 bg-slate-50 rounded-lg mb-4">
+                            <span class="font-medium text-sm">開放前台報名</span><input type="checkbox" id="sysOpenToggle" class="w-5 h-5 accent-blue-600">
+                        </div>
+                        <button id="saveSysStatusBtn" class="w-full bg-slate-900 text-white py-3 rounded-lg font-bold text-sm hover:bg-slate-800 transition-colors">儲存狀態</button>
+                    </div>
+                    <div class="pro-card p-6">
+                        <h3 class="font-bold text-slate-900 text-sm mb-4">多節點核銷任務 (Check-in Nodes)</h3>
+                        <p class="text-xs text-slate-500 mb-4">設定掃描槍可切換的任務（如：大門報到、領便當、領贈品）。</p>
+                        <div id="nodesContainer" class="space-y-2 mb-4"></div>
+                        <div class="flex gap-2"><input type="text" id="newNodeInput" class="pro-input flex-1" placeholder="新增任務名稱"><button id="addNodeBtn" class="bg-slate-900 text-white px-4 rounded-lg text-sm font-bold">新增</button></div>
+                    </div>
+                    <div class="pro-card p-6 md:col-span-2">
+                        <h3 class="font-bold text-slate-900 text-sm mb-4">報名組別管理</h3>
+                        <form id="addCatForm" class="flex flex-col md:flex-row gap-2 mb-4">
+                            <input type="text" id="catName" class="pro-input flex-[2]" placeholder="組別名稱" required>
+                            <input type="number" id="catLimit" class="pro-input flex-1" placeholder="人數上限" min="1" required>
+                            <button type="submit" class="bg-slate-900 text-white px-6 rounded-lg font-bold text-sm">新增</button>
+                        </form>
+                        <div id="catCardsContainer" class="space-y-2 grid grid-cols-1 md:grid-cols-2 gap-2"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="view-form-builder" class="view-section hidden p-8"><h2 class="text-3xl font-black mb-8">表單設計器</h2><button onclick="document.getElementById('fieldModal').classList.remove('hidden')" class="mb-6 bg-slate-900 text-white px-5 py-2.5 rounded-lg text-sm font-bold">+ 新增自訂題目</button><div id="formFieldsList" class="space-y-3 max-w-3xl"></div></section>
+            <section id="view-raffle" class="view-section hidden p-8"><h2 class="text-3xl font-black mb-8">進階抽獎</h2><div class="flex gap-8"><div class="w-1/3 bg-white p-6 rounded-2xl border border-slate-200"><h4 class="font-bold mb-4">過濾條件</h4><div id="raffleCatExclusion" class="mb-4 space-y-2"></div><div id="raffleDynamicExclusion" class="space-y-3"></div></div><div class="flex-1 bg-slate-900 rounded-2xl flex flex-col items-center justify-center p-10"><div id="raffleDisplay" class="text-6xl font-black text-white mb-8 tracking-tighter">準備抽選</div><button id="startRaffleBtn" class="bg-blue-600 text-white px-10 py-4 rounded-xl font-black text-xl hover:bg-blue-500">抽出幸運兒</button></div></div><div id="winnerList" class="mt-6 flex flex-wrap gap-2"></div></section>
+        </main>
+    </div>
+
+    <section id="view-remote-scanner" class="hidden fixed inset-0 z-[5000] flex-col bg-[#05080f] text-white">
+        
+        <header class="glass-panel px-5 py-4 flex items-center justify-between shrink-0 z-20">
+            <div>
+                <h1 class="font-black text-xl tracking-tight">Scanner Pro</h1>
+                <div class="flex items-center gap-1.5 mt-1">
+                    <div id="netStatusDot" class="w-2 h-2 rounded-full bg-emerald-500"></div>
+                    <span id="netStatusText" class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Online</span>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <button id="torchBtn" class="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-xl hidden transition-colors">🔦</button>
+            </div>
+        </header>
+
+        <div class="px-5 py-3 bg-[#0B1120] border-b border-white/5 shrink-0 z-20">
+            <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5">當前核銷任務 (Node)</label>
+            <select id="scannerNodeSelect" class="w-full bg-[#1e293b] text-white border-none rounded-xl px-4 py-3 font-bold focus:ring-2 ring-blue-500 appearance-none"></select>
+        </div>
+
+        <div class="flex-1 relative overflow-hidden">
+            
+            <div id="tab-scan" class="scanner-tab-content active p-5 pt-8 items-center">
+                <div class="w-full max-w-sm aspect-[4/5] bg-black rounded-[2rem] overflow-hidden relative border border-white/10 shadow-[0_0_40px_rgba(0,0,0,0.5)]">
+                    <div id="reader" class="w-full h-full bg-slate-900"></div>
+                    <div class="absolute inset-0 pointer-events-none flex items-center justify-center">
+                        <div class="w-48 h-48 border-2 border-white/20 rounded-3xl relative">
+                            <div class="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-blue-500 rounded-tl-xl"></div>
+                            <div class="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-blue-500 rounded-tr-xl"></div>
+                            <div class="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-blue-500 rounded-bl-xl"></div>
+                            <div class="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-blue-500 rounded-br-xl"></div>
+                        </div>
+                    </div>
+                </div>
+                <button id="startCamBtn" class="mt-8 px-8 py-4 bg-blue-600 rounded-2xl font-black text-lg active:scale-95 transition-transform shadow-[0_0_20px_rgba(37,99,235,0.4)]">啟動相機模組</button>
+                <button id="stopCamBtn" class="mt-8 px-8 py-4 bg-white/10 rounded-2xl font-bold active:scale-95 transition-transform hidden">暫停掃描</button>
+            </div>
+
+            <div id="tab-search" class="scanner-tab-content p-5">
+                <input type="text" id="manualSearchInput" class="w-full bg-white/10 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder-slate-500 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4" placeholder="輸入姓名或手機搜尋...">
+                <div id="manualSearchResults" class="flex-1 overflow-y-auto custom-scrollbar space-y-3 pb-20">
+                    <div class="text-center text-slate-500 text-sm mt-10 font-bold">輸入關鍵字尋找報名者</div>
+                </div>
+            </div>
+
+            <div id="tab-stats" class="scanner-tab-content p-5 justify-center items-center">
+                <div class="w-full max-w-sm bg-white/5 border border-white/10 rounded-[2rem] p-8 text-center">
+                    <h3 class="text-sm font-black text-slate-400 uppercase tracking-widest mb-2">當前任務進度</h3>
+                    <p id="statNodeName" class="text-xl font-black text-white mb-8">--</p>
+                    
+                    <div class="relative w-48 h-48 mx-auto mb-8 flex items-center justify-center">
+                        <svg class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                            <circle cx="50" cy="50" r="45" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="8"></circle>
+                            <circle id="statProgressCircle" cx="50" cy="50" r="45" fill="none" stroke="#38bdf8" stroke-width="8" stroke-dasharray="283" stroke-dashoffset="283" stroke-linecap="round" class="transition-all duration-1000 ease-out"></circle>
+                        </svg>
+                        <div class="absolute text-center">
+                            <p id="statCurrent" class="text-4xl font-black text-white">0</p>
+                            <p class="text-[10px] text-slate-400 font-bold">/ <span id="statTotal">0</span></p>
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-500 font-bold">數據已與主控台同步</p>
+                </div>
+            </div>
+
+            <div id="scanResultSheet" class="bottom-sheet absolute inset-x-0 bottom-0 bg-[#1e293b] rounded-t-[2.5rem] shadow-[0_-20px_50px_rgba(0,0,0,0.5)] z-50 flex flex-col pt-3 pb-8 px-6 border-t border-white/10">
+                <div class="w-12 h-1.5 bg-slate-600 rounded-full mx-auto mb-6"></div>
+                <div class="text-center">
+                    <div id="resultIcon" class="text-5xl mb-3">✅</div>
+                    <h3 id="resultTitle" class="text-2xl font-black text-white mb-1">核銷成功</h3>
+                    <p id="resultName" class="text-3xl font-black text-blue-400 mb-6">王小明</p>
+                    
+                    <div id="resultTags" class="flex flex-wrap justify-center gap-2 mb-8">
+                        </div>
+                    
+                    <button id="closeSheetBtn" class="w-full py-4 bg-white/10 rounded-xl font-bold text-white active:bg-white/20 transition-colors">繼續掃描</button>
+                </div>
+            </div>
+            <div id="sheetOverlay" class="absolute inset-0 bg-black/60 backdrop-blur-sm z-40 hidden opacity-0 transition-opacity duration-300"></div>
+        </div>
+
+        <nav class="glass-panel shrink-0 pb-safe flex justify-around items-center pt-2 pb-2 z-20">
+            <button class="app-tab-btn active flex flex-col items-center gap-1 p-2 w-20" data-target="tab-scan">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h4a1 1 0 010 2H5v3a1 1 0 01-2 0V4zm14-1a1 1 0 011 1v3a1 1 0 01-2 0V5h-3a1 1 0 010-2h4zM4 17a1 1 0 012 0v3h3a1 1 0 010 2H5a1 1 0 01-1-1v-4zm15 0a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 010-2h3v-3a1 1 0 011-1z"></path></svg>
+                <span class="text-[10px] font-bold">掃描</span>
+            </button>
+            <button class="app-tab-btn flex flex-col items-center gap-1 p-2 w-20" data-target="tab-search">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                <span class="text-[10px] font-bold">搜尋</span>
+            </button>
+            <button class="app-tab-btn flex flex-col items-center gap-1 p-2 w-20" data-target="tab-stats">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                <span class="text-[10px] font-bold">統計</span>
+            </button>
+        </nav>
+    </section>
+
+    <div id="exportAuthModal" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[3000] hidden items-center justify-center p-4">
+        <div class="bg-white p-8 rounded-2xl w-full max-w-sm shadow-2xl">
+            <h3 class="text-xl font-black mb-2 text-slate-900">安全防護驗證</h3>
+            <p class="text-xs text-slate-500 mb-6">為保護個資，執行匯出前請再次輸入您的管理員密碼。</p>
+            <input type="password" id="exportPwd" class="pro-input mb-4" placeholder="密碼">
+            <div class="flex gap-2"><button onclick="document.getElementById('exportAuthModal').classList.add('hidden')" class="flex-1 bg-slate-100 py-3 rounded-xl font-bold">取消</button><button id="confirmExportBtn" class="flex-1 bg-slate-900 text-white py-3 rounded-xl font-bold">確認解鎖</button></div>
+        </div>
+    </div>
+
+    <div id="editUserModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[600] hidden items-center justify-center p-4"><div class="bg-white w-full max-w-md rounded-[2rem] p-8 shadow-2xl transform scale-95 transition-all"><h3 class="text-2xl font-black mb-6">編輯資料</h3><form id="editUserForm" class="space-y-4"><input type="hidden" id="editUserId"><div class="grid grid-cols-2 gap-4"><div><label class="block text-xs font-bold text-slate-500 mb-1">姓名</label><input type="text" id="editUserName" class="pro-input py-2" required></div><div><label class="block text-xs font-bold text-slate-500 mb-1">電話</label><input type="text" id="editUserPhone" class="pro-input py-2" required></div></div><div class="grid grid-cols-2 gap-4"><div><label class="block text-xs font-bold text-slate-500 mb-1">系統狀態</label><select id="editUserStatus" class="pro-input py-2"><option value="正取">正取</option><option value="備取">備取</option><option value="已取消">已取消</option></select></div></div><div id="editUserDynamicFields" class="space-y-4 pt-2 border-t border-slate-100 max-h-[30vh] overflow-y-auto custom-scrollbar"></div><div class="pt-4 flex gap-2"><button type="button" onclick="document.getElementById('editUserModal').classList.add('hidden')" class="flex-1 bg-slate-100 text-slate-600 py-3.5 rounded-xl font-bold hover:bg-slate-200">取消</button><button type="submit" class="flex-1 bg-blue-600 text-white py-3.5 rounded-xl font-bold hover:bg-blue-700">儲存變更</button></div></form></div></div>
+    <div id="fieldModal" class="fixed inset-0 bg-slate-900/60 z-[600] hidden items-center justify-center p-4"><div class="bg-white w-full max-w-sm rounded-[2rem] p-8 shadow-2xl"><h3 class="text-xl font-black mb-6">新增自訂題目</h3><div class="space-y-4"><div><label class="block text-xs font-bold text-slate-500 mb-1">題目名稱</label><input type="text" id="fieldLabel" class="pro-input" placeholder="如：性別、尺寸"></div><div><label class="block text-xs font-bold text-slate-500 mb-1">格式類型</label><select id="fieldType" class="pro-input"><option value="text">單行文字</option><option value="select">下拉選單</option></select></div><div id="optionsGroup" class="hidden"><label class="block text-xs font-bold text-slate-500 mb-1">選項 (逗號隔開)</label><input type="text" id="fieldOptions" class="pro-input" placeholder="男, 女"></div><button id="saveFieldBtn" class="w-full bg-slate-900 text-white py-3.5 rounded-xl font-bold">確定新增</button></div></div></div>
+
+    <div id="toastContainer" class="fixed top-4 right-4 md:top-auto md:bottom-6 md:right-6 z-[6000] flex flex-col gap-2 pointer-events-none"></div>
+
+    <script type="module" src="admin.js"></script>
+</body>
+</html>
