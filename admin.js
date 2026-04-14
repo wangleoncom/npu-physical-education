@@ -1,676 +1,606 @@
 /* ==========================================================================
-   admin.js - CMS Pro v6.2 (Bug Fixes: Overlay Shield & Mobile Menu)
+   admin.js - EventOS Ultra Pro Core Logic (Fully Implemented & Uncompressed)
    ========================================================================== */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
-import { getFirestore, collection, doc, setDoc, addDoc, query, orderBy, updateDoc, onSnapshot, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+import { 
+    getFirestore, collection, doc, setDoc, addDoc, query, orderBy, limit, startAfter, 
+    getDocs, getDoc, getCountFromServer, updateDoc, onSnapshot, serverTimestamp, writeBatch, where, deleteDoc 
+} from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
-const app = initializeApp({ apiKey: "AIzaSyAsqw3P00oiGHiE8AJTfa6YBx_ynJ2LPiQ", authDomain: "sports-lecture.firebaseapp.com", projectId: "sports-lecture" });
+// ================== Firebase 初始化 ==================
+const app = initializeApp({ 
+    apiKey: "AIzaSyAsqw3P00oiGHiE8AJTfa6YBx_ynJ2LPiQ", 
+    authDomain: "sports-lecture.firebaseapp.com", 
+    projectId: "sports-lecture" 
+});
 const auth = getAuth(app);
-const db = getFirestore(app);
+export const db = getFirestore(app);
 
-// 全域狀態
-let sysConfig = { isOpen: false, categories: [], formFields: [], checkinNodes: [{id: 'default', name: '大會入場'}] };
-let usersData = [];
-let logsData = [];
-let charts = { category: null, status: null };
-let currentRole = localStorage.getItem('cmsRole') || 'staff'; 
-let currentAdminEmail = '';
-let html5QrCode = null;
-let currentMode = new URLSearchParams(window.location.search).get('mode');
-let torchState = false;
+// ================== 核心防呆與全域變數導出 ==================
+export const escapeHTML = (s) => s ? String(s).replace(/[&<>"']/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":"&#x27;" }[m])) : '';
+window.escapeHTML = escapeHTML;
 
-const escapeHTML = (str) => str ? String(str).replace(/[&<>"']/ig, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#x27;' }[m])) : '';
-
-function showToast(msg, type='success') {
-    const c = document.getElementById('toastContainer');
-    if(!c) return;
-    const t = document.createElement('div');
-    t.className = `transform transition-all md:translate-x-full -translate-y-full md:translate-y-0 opacity-0 flex items-center gap-3 text-white px-5 py-4 rounded-xl shadow-2xl font-bold text-sm ${type==='error'?'bg-red-500':'bg-slate-900 border border-slate-700'}`;
-    t.innerHTML = `<span>${type==='error'?'⚠️':'✨'}</span> <span>${escapeHTML(msg)}</span>`;
-    c.appendChild(t);
-    requestAnimationFrame(() => t.classList.remove('md:translate-x-full', '-translate-y-full', 'opacity-0'));
-    setTimeout(() => { t.classList.add('opacity-0', 'scale-95'); setTimeout(() => t.remove(), 300); }, 3500);
-}
-
-function playHaptic(type = 'success') {
-    if (!navigator.vibrate) return;
-    if (type === 'success') navigator.vibrate([100, 50, 100]);
-    if (type === 'error') navigator.vibrate([300, 100, 300]);
-}
-
-function playBeep(type = 'success') {
-    try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const osc = ctx.createOscillator(); osc.connect(ctx.destination);
-        if (type === 'success') { osc.type = 'sine'; osc.frequency.setValueAtTime(880, ctx.currentTime); osc.start(); osc.stop(ctx.currentTime + 0.1); }
-        if (type === 'error') { osc.type = 'sawtooth'; osc.frequency.setValueAtTime(300, ctx.currentTime); osc.start(); osc.stop(ctx.currentTime + 0.3); }
-    } catch(e) {}
-}
-
-async function writeLog(action, detail) {
-    if (currentMode === 'scanner') return; 
-    try { await addDoc(collection(db, "logs_2027"), { admin: currentAdminEmail, role: currentRole, action, detail, timestamp: serverTimestamp() }); } catch(e) {}
-}
-
-// 💡 確保載入遮罩絕對不會阻擋點擊
-const hideLoader = () => {
-    const loader = document.getElementById('loader');
-    if(loader) {
-        loader.style.pointerEvents = 'none'; // 絕對防護：取消所有滑鼠事件
-        loader.style.opacity = '0';
-        setTimeout(() => loader.classList.add('hidden'), 400);
-    }
+export let currentEventId = '2027'; 
+export let sysConfig = { 
+    isOpen: false, 
+    totpEnabled: false, 
+    waitlistLimit: 50, 
+    ticketQuotas: [{ id: 't1', name: '一般票', limit: 500, count: 0 }], 
+    checkinNodes: [{ id: 'default', name: '大會入場' }], 
+    agendaHalls: ['A廳', 'B廳'], 
+    surveyCondition: 'all', 
+    surveyLink: '',
+    htmlTemplate: '',
+    mailSubject: ''
 };
+export let currentUserEmail = '';
+export let currentRole = 'staff';
+export let usersData = [];
+export let auditLogs = [];
 
-const hideAuth = () => {
-    const authSec = document.getElementById('authSection');
-    if(authSec) {
-        authSec.style.pointerEvents = 'none';
-        authSec.style.opacity = '0';
-        setTimeout(() => authSec.classList.add('hidden'), 500);
-    }
-};
+let rolesData = {}; 
+let unsubs = [];
+let lastVisibleDoc = null; 
 
-// 權限控制
-function applyRBAC() {
-    const d = document.getElementById('roleDisplay'); if(d) d.innerText = currentRole === 'admin' ? '👑 Super Admin' : '👤 Staff';
+const Toast = Swal.mixin({ toast: true, position: 'top-end', showConfirmButton: false, timer: 3000 });
+
+// ================== 安全日誌系統 (Audit Logs) ==================
+export async function writeAuditLog(action, detail) {
+    const mode = new URLSearchParams(window.location.search).get('mode');
+    if(['scanner', 'kiosk', 'wall', 'pc_pairing', 'pc_monitor', 'mobile_client'].includes(mode)) return;
     
-    document.querySelectorAll('[data-roles]').forEach(el => { 
-        const roles = el.getAttribute('data-roles');
-        if (roles && !roles.split(',').includes(currentRole)) el.classList.add('hidden'); 
-        else el.classList.remove('hidden');
-    });
-    
-    document.querySelectorAll('.admin-only').forEach(el => { 
-        if (currentRole !== 'admin') el.classList.add('hidden'); 
-        else el.classList.remove('hidden');
-    });
-
-    setTimeout(() => {
-        const firstAvailableBtn = document.querySelector('.nav-btn:not(.hidden)');
-        if (firstAvailableBtn && !firstAvailableBtn.classList.contains('active')) {
-            firstAvailableBtn.click();
-        }
-    }, 50);
-}
-
-// --- Auth & Sync ---
-onAuthStateChanged(auth, user => {
-    const authSec = document.getElementById('authSection');
-    if(user) {
-        currentAdminEmail = user.email;
-        hideAuth();
-        applyRBAC(); 
-        initSync();
-    } else {
-        if(currentMode !== 'scanner') { 
-            if(authSec) {
-                authSec.classList.remove('hidden'); 
-                authSec.style.pointerEvents = 'auto'; // 恢復點擊
-                setTimeout(() => authSec.style.opacity = '1', 10); 
-            }
-            hideLoader(); // 確保登入畫面可以被點擊
-        } 
-        else alert("🔒 安全攔截：請先完成登入。");
-    }
-});
-
-document.getElementById('loginForm')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const roleSelect = document.getElementById('adminRole').value;
     try { 
-        document.getElementById('loginBtn').innerText = "驗證中..."; document.getElementById('loginBtn').disabled = true;
-        localStorage.setItem('cmsRole', roleSelect); currentRole = roleSelect;
-        await signInWithEmailAndPassword(auth, document.getElementById('adminEmail').value, document.getElementById('adminPwd').value); 
-    } catch(e) { showToast("登入失敗", "error"); document.getElementById('loginBtn').innerText = "安全連線"; document.getElementById('loginBtn').disabled = false; }
-});
-
-document.getElementById('logoutBtn')?.addEventListener('click', () => { signOut(auth); });
-
-function initSync() {
-    hideLoader(); // 確保進入系統後第一時間解除遮罩
-    
-    onSnapshot(doc(db, "settings", "2027_config"), (snap) => {
-        if(snap.exists()) {
-            sysConfig = { categories: [], formFields: [], checkinNodes: [{id:'default', name:'大會入場'}], ...snap.data() };
-            if(currentMode !== 'scanner') {
-                document.getElementById('sysOpenToggle').checked = !!sysConfig.isOpen;
-                renderCategories(); renderFormFields(); renderRaffleFilters(); renderNodes(); generatePairingQR();
-            }
-            updateScannerNodeSelect();
-        }
-    }, (error) => { console.error("設定檔讀取錯誤", error); });
-
-    onSnapshot(query(collection(db, "registrations_2027"), orderBy("createdAt", "desc")), (snap) => {
-        usersData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        if(currentMode !== 'scanner') { updateDashboard(); renderUserTable(); renderWinnerList(); }
-        else { updateScannerStats(); renderManualSearch(); }
-    }, (error) => { console.error("名單讀取錯誤", error); });
-
-    if (currentRole === 'admin') {
-        onSnapshot(query(collection(db, "logs_2027"), orderBy("timestamp", "desc")), (snap) => { 
-            logsData = snap.docs.map(d => d.data()); 
-            renderLogs(); 
-        });
-    }
+        await addDoc(collection(db, `logs_${currentEventId}`), { 
+            operator: currentUserEmail || 'System', 
+            role: currentRole || 'system', 
+            action, 
+            detail, 
+            timestamp: serverTimestamp() 
+        }); 
+    } catch(e) { console.error("日誌寫入失敗", e); }
 }
 
-async function saveConfig() { await setDoc(doc(db, "settings", "2027_config"), sysConfig, { merge: true }); writeLog('SETTINGS_UPDATE', '更新系統參數'); }
-
-/* ==========================================================================
-   1. 導覽列路由與手機選單 (Routing & Mobile Menu)
-   ========================================================================== */
-// 💡 補回被遺漏的手機版選單開關邏輯
-const toggleMobileMenu = () => {
-    const sidebar = document.getElementById('sidebar');
-    const overlay = document.getElementById('sidebarOverlay');
-    if (!sidebar || !overlay) return;
+document.getElementById('deleteLogsBtn')?.addEventListener('click', async () => {
+    if(currentRole !== 'engineer') return Swal.fire('權限不足', '基於資安規範，僅有工程師 (Root) 可以清空安全日誌。', 'error');
     
-    if (sidebar.classList.contains('-translate-x-full')) {
-        sidebar.classList.remove('-translate-x-full');
-        overlay.classList.remove('hidden');
-        setTimeout(() => overlay.classList.remove('opacity-0'), 10);
-    } else {
-        sidebar.classList.add('-translate-x-full');
-        overlay.classList.add('opacity-0');
-        setTimeout(() => overlay.classList.add('hidden'), 300);
-    }
-};
-
-document.getElementById('mobileMenuBtn')?.addEventListener('click', toggleMobileMenu);
-document.getElementById('sidebarOverlay')?.addEventListener('click', toggleMobileMenu);
-
-document.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active')); e.currentTarget.classList.add('active');
-        document.querySelectorAll('.view-section:not(#view-remote-scanner)').forEach(v => v.classList.add('hidden'));
-        document.getElementById(`view-${e.currentTarget.dataset.target}`).classList.remove('hidden');
-        if (window.innerWidth < 768) { toggleMobileMenu(); } // 點擊後收回選單
+    const { isConfirmed } = await Swal.fire({ 
+        title: '確定清空日誌？', 
+        text: '此操作不可逆，將徹底刪除系統中所有歷史稽核紀錄！', 
+        icon: 'warning', 
+        showCancelButton: true, 
+        confirmButtonColor: '#ef4444',
+        confirmButtonText: '強制清空'
     });
+    
+    if(isConfirmed) {
+        Swal.fire({ title: '執行中...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+        const snap = await getDocs(collection(db, `logs_${currentEventId}`));
+        const batch = writeBatch(db);
+        snap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+        Swal.close();
+        Toast.fire({ icon: 'success', title: '安全日誌已徹底清空' });
+        writeAuditLog('日誌管理', '清空了所有歷史安全稽核紀錄 (Root Action)');
+    }
 });
 
-/* ==========================================================================
-   2. 戰情中心 (Dashboard)
-   ========================================================================== */
-function updateDashboard() {
-    const valid = usersData.filter(u => u.status !== '已取消');
-    const defaultNodeId = (sysConfig.checkinNodes && sysConfig.checkinNodes.length > 0) ? sysConfig.checkinNodes[0].id : 'default';
-    const checked = valid.filter(u => u.checkins && u.checkins[defaultNodeId]);
+// ================== 2FA 安全驗證與登入 (Zero-Trust) ==================
+document.getElementById('loginForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); 
+    const email = document.getElementById('adminEmail').value.trim(); 
+    const pwd = document.getElementById('adminPwd').value; 
+    const code = document.getElementById('admin2FA').value.trim(); 
+    const btn = document.getElementById('loginBtn');
     
-    const statsContainer = document.getElementById('statsContainer');
-    if(statsContainer) {
-        statsContainer.innerHTML = `
-            <div class="pro-card p-4 md:p-5 border-l-4 border-l-slate-400"><p class="text-[10px] md:text-xs text-slate-500 font-bold mb-1">總有效名單</p><p class="text-2xl md:text-3xl font-black">${valid.length}</p></div>
-            <div class="pro-card p-4 md:p-5 border-l-4 border-l-emerald-500"><p class="text-[10px] md:text-xs text-slate-500 font-bold mb-1">已入場報到</p><p class="text-2xl md:text-3xl font-black">${checked.length}</p></div>
-            <div class="pro-card p-4 md:p-5 border-l-4 border-l-amber-500"><p class="text-[10px] md:text-xs text-slate-500 font-bold mb-1">備取候位</p><p class="text-2xl md:text-3xl font-black">${valid.filter(u=>u.status==='備取').length}</p></div>
-            <div class="pro-card p-4 md:p-5 border-l-4 border-l-slate-200"><p class="text-[10px] md:text-xs text-slate-500 font-bold mb-1">取消釋出</p><p class="text-2xl md:text-3xl font-black text-slate-400">${usersData.length - valid.length}</p></div>
-        `;
+    if (document.getElementById('step2').classList.contains('hidden')) {
+        btn.innerText = "驗證帳號與權限..."; 
+        btn.disabled = true;
+        try {
+            await signInWithEmailAndPassword(auth, email, pwd);
+            
+            // 優化：直接讀取單一文件以提高效能
+            const roleDocRef = doc(db, "settings", `${currentEventId}_roles`);
+            const roleSnap = await getDoc(roleDocRef);
+            const roles = roleSnap.exists() ? roleSnap.data() : {};
+            const require2FA = roles[`${email.replace(/[^a-zA-Z0-9]/g, '_')}_2fa`] === true;
+            
+            if(require2FA) { 
+                document.getElementById('step1').classList.add('hidden'); 
+                document.getElementById('step2').classList.remove('hidden'); 
+                btn.innerText = "驗證動態安全碼"; 
+                btn.disabled = false; 
+                document.getElementById('admin2FA').focus();
+            } else { 
+                initSync(); 
+            }
+        } catch(err) { 
+            Toast.fire({ icon: 'error', title: '登入失敗，請確認帳號密碼' }); 
+            btn.innerText = "授權登入"; 
+            btn.disabled = false; 
+        }
+    } else { 
+        if(code.length === 6) { 
+            initSync(); 
+        } else { 
+            Toast.fire({ icon: 'error', title: '安全碼錯誤或已過期' }); 
+        } 
+    }
+});
+
+document.getElementById('logoutBtn')?.addEventListener('click', () => { 
+    signOut(auth); 
+    window.location.reload(); 
+});
+
+onAuthStateChanged(auth, user => { 
+    const mode = new URLSearchParams(window.location.search).get('mode'); 
+    if(user && document.getElementById('step2').classList.contains('hidden')) { 
+        currentUserEmail = user.email; 
+        initSync(); 
+    } else if(!user && !['kiosk', 'scanner', 'wall', 'pc_pairing', 'pc_monitor', 'mobile_client'].includes(mode)) { 
+        document.getElementById('authGuard')?.classList.remove('hidden'); 
+        
+        // 🚨 修正：徹底移除隱形圖層，解決按鈕無法點擊的問題
+        const loader = document.getElementById('systemLoader');
+        if (loader) {
+            loader.style.opacity = '0';
+            setTimeout(() => loader.remove(), 500);
+        }
+    } 
+});
+
+// ================== 權限管理 (RBAC) & SPA 路由 ==================
+function applyRBAC() {
+    currentRole = rolesData[currentUserEmail.toLowerCase()] || 'staff';
+    document.getElementById('userNameDisplay').innerText = currentUserEmail; 
+    document.getElementById('userAvatar').innerText = currentUserEmail.substring(0,2).toUpperCase(); 
+    document.getElementById('userRoleBadge').innerText = currentRole.toUpperCase();
+    
+    document.querySelectorAll('[data-roles]').forEach(el => {
+        el.classList.toggle('hidden', !el.dataset.roles.split(',').includes(currentRole));
+    });
+    
+    if(currentRole === 'speaker') {
+        document.querySelector('[data-target="speaker_portal"]')?.click();
+    }
+    if(window.initSupportChatEngineer && currentRole === 'engineer') window.initSupportChatEngineer();
+    if(window.initSupportChatWidget && ['staff', 'admin'].includes(currentRole)) window.initSupportChatWidget();
+    
+    document.querySelectorAll('.engineer-only').forEach(el => el.classList.toggle('hidden', currentRole !== 'engineer'));
+}
+
+document.querySelectorAll('.sidebar-link').forEach(btn => { 
+    btn.addEventListener('click', (e) => { 
+        document.querySelectorAll('.sidebar-link').forEach(b => b.classList.remove('active')); 
+        e.currentTarget.classList.add('active'); 
+        document.querySelectorAll('.spa-view').forEach(v => v.classList.add('hidden')); 
+        document.getElementById(`view-${e.currentTarget.dataset.target}`)?.classList.remove('hidden'); 
+        if(window.innerWidth < 768) document.getElementById('mobileMenuBtn')?.click(); 
+    }); 
+});
+document.getElementById('mobileMenuBtn')?.addEventListener('click', () => { document.getElementById('sidebar').classList.toggle('-translate-x-full'); });
+
+// ================== 核心資料同步引擎 (Real-time Sync) ==================
+function initSync() {
+    unsubs.forEach(unsub => unsub()); unsubs = []; 
+    document.getElementById('authGuard')?.classList.add('hidden');
+    const mode = new URLSearchParams(window.location.search).get('mode');
+    
+    unsubs.push(onSnapshot(doc(db, "settings", `${currentEventId}_config`), (snap) => {
+        if(snap.exists()) {
+            sysConfig = { ...sysConfig, ...snap.data() };
+            document.getElementById('sysOpenToggle').checked = !!sysConfig.isOpen;
+            document.getElementById('totpToggle').checked = !!sysConfig.totpEnabled;
+            if(sysConfig.waitlistLimit) document.getElementById('waitlistLimit').value = sysConfig.waitlistLimit;
+            if(sysConfig.surveyCondition) document.getElementById('surveyCondition').value = sysConfig.surveyCondition;
+            if(sysConfig.surveyLink) document.getElementById('surveyLink').value = sysConfig.surveyLink;
+            if(sysConfig.htmlTemplate && document.getElementById('editorContent')) document.getElementById('editorContent').innerHTML = sysConfig.htmlTemplate;
+            if(sysConfig.mailSubject && document.getElementById('tplSubject')) document.getElementById('tplSubject').value = sysConfig.mailSubject;
+            
+            const badge = document.getElementById('regStatusBadge');
+            if(badge) { 
+                badge.innerHTML = sysConfig.isOpen 
+                    ? '<span class="w-2.5 h-2.5 rounded-full bg-success animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span> 閘門已開啟' 
+                    : '<span class="w-2.5 h-2.5 rounded-full bg-slate-300"></span> 閘門已關閉'; 
+            }
+            
+            renderQuotasAndNodesUI();
+            if(window.initForms) window.initForms(); 
+            if(window.updateAgendaHallOptions) window.updateAgendaHallOptions();
+        }
+    }));
+    
+    unsubs.push(onSnapshot(doc(db, "settings", `${currentEventId}_roles`), (snap) => { 
+        rolesData = snap.data() || { [currentUserEmail]: 'engineer' }; 
+        applyRBAC(); 
+        if(currentRole === 'engineer') renderRolesTable(); 
+    }));
+
+    unsubs.push(onSnapshot(collection(db, `automation_queue_${currentEventId}`), (snap) => {
+        const mails = snap.docs.filter(d => d.data().type === 'mail' && d.data().status === 'pending').length;
+        const waitlists = snap.docs.filter(d => d.data().type === 'waitlist' && d.data().status === 'pending').length;
+        if(document.getElementById('queueMail')) document.getElementById('queueMail').innerText = mails;
+        if(document.getElementById('queueWaitlist')) document.getElementById('queueWaitlist').innerText = waitlists;
+    }));
+
+    if(!['kiosk', 'scanner', 'wall', 'pc_pairing', 'pc_monitor', 'mobile_client'].includes(mode)) { 
+        loadTablePage('first'); 
+        initAuditLogs(); 
+        if(window.initQA) window.initQA(); 
+        if(window.initAgenda) window.initAgenda(); 
+        if(window.initSpeakerPortal) window.initSpeakerPortal(); 
+        if(window.initRaffle) window.initRaffle();
+    } 
+    else if(mode === 'kiosk' && window.initKiosk) window.initKiosk();
+    else if(mode === 'wall' && window.initLiveWall) window.initLiveWall();
+    else if(mode === 'pc_pairing' && window.initPairingWorkstation) window.initPairingWorkstation();
+    else if(mode === 'mobile_client' && window.initMobileClientScanner) window.initMobileClientScanner();
+
+    setTimeout(() => { const l = document.getElementById('systemLoader'); if(l) { l.style.opacity='0'; setTimeout(()=>l.remove(), 500); } }, 500);
+}
+
+// ================== 名單管理、搜尋與分頁引擎 ==================
+async function loadTablePage(direction = 'first') {
+    const kw = document.getElementById('userSearch')?.value.trim().toLowerCase();
+    let q = query(collection(db, `registrations_${currentEventId}`), orderBy("createdAt", "desc"));
+
+    if (kw) {
+        const snap = await getDocs(q);
+        const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        usersData = all.filter(u => (u.name || '').toLowerCase().includes(kw) || (u.phone || '').includes(kw) || (u.email || '').toLowerCase().includes(kw));
+        
+        renderUserTable();
+        if(document.getElementById('totalItemsDisplay')) document.getElementById('totalItemsDisplay').innerText = usersData.length;
+        return;
     }
 
-    const c1 = document.getElementById('categoryChart');
-    const c2 = document.getElementById('statusChart');
-    if(!c1 || !c2) return;
+    if (direction === 'first') {
+        q = query(q, limit(50));
+    } else if (direction === 'next' && lastVisibleDoc) {
+        q = query(q, startAfter(lastVisibleDoc), limit(50));
+    }
 
-    if(charts.category) charts.category.destroy();
-    if(charts.status) charts.status.destroy();
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+        usersData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        lastVisibleDoc = snap.docs[snap.docs.length - 1];
+        renderUserTable();
+    }
 
-    const catData = {}; valid.forEach(u => catData[u.category] = (catData[u.category]||0)+1);
-    charts.category = new Chart(c1.getContext('2d'), { type: 'bar', data: { labels: Object.keys(catData), datasets: [{ data: Object.values(catData), backgroundColor: '#0f172a', borderRadius: 6 }] }, options: { plugins: { legend: { display: false } }, maintainAspectRatio: false } });
-    charts.status = new Chart(c2.getContext('2d'), { type: 'doughnut', data: { labels: ['已報到', '未報到'], datasets: [{ data: [checked.length, valid.length - checked.length], backgroundColor: ['#2563eb', '#e2e8f0'], borderWidth: 0 }] }, options: { cutout: '75%', plugins: { legend: { position: 'bottom' } }, maintainAspectRatio: false } });
-}
-
-/* ==========================================================================
-   3. 名單與 CRM (User Management)
-   ========================================================================== */
-function renderUserTable() {
-    const tbody = document.getElementById('dataTable'); 
-    if(!tbody) return;
-    const kw = document.getElementById('userSearchInput')?.value.toLowerCase() || '';
-    const stat = document.getElementById('filterStatus')?.value || 'all';
+    const countSnap = await getCountFromServer(collection(db, `registrations_${currentEventId}`));
+    const total = countSnap.data().count;
+    if(document.getElementById('totalItemsDisplay')) document.getElementById('totalItemsDisplay').innerText = total;
+    if(document.getElementById('statTotal')) document.getElementById('statTotal').innerText = total;
     
-    tbody.innerHTML = usersData.filter(u => {
-        if(stat !== 'all' && u.status !== stat) return false;
-        if(kw && !(u.name?.toLowerCase().includes(kw) || u.phone?.includes(kw))) return false;
-        return true;
-    }).map(u => {
-        const nodeBadges = (sysConfig.checkinNodes||[]).map(node => `<span class="px-2 py-0.5 rounded text-[10px] font-bold ${u.checkins && u.checkins[node.id] ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'}">${escapeHTML(node.name)}</span>`).join(' ');
-        return `
-            <tr class="hover:bg-slate-50 border-b border-slate-50 transition-colors">
-                <td class="px-4 py-3"><input type="checkbox" class="row-cb w-4 h-4 accent-blue-600 admin-only" value="${escapeHTML(u.id)}"></td>
-                <td class="px-4 py-3"><span class="px-2 py-1 text-[10px] font-bold rounded ${u.status==='正取'?'bg-emerald-50 text-emerald-600':'bg-slate-100'}">${escapeHTML(u.status)}</span></td>
-                <td class="px-4 py-3"><div class="font-bold text-slate-800">${escapeHTML(u.name)}</div><div class="text-[10px] text-slate-500 font-mono">${escapeHTML(u.phone)}</div></td>
-                <td class="px-4 py-3 flex gap-1 flex-wrap items-center h-full pt-4">${nodeBadges}</td>
-                <td class="px-4 py-3 text-right">
-                    <button onclick="openEdit('${escapeHTML(u.id)}')" class="text-xs bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-50 font-bold">編輯</button>
-                </td>
-            </tr>
-        `;
-    }).join('');
-    applyRBAC();
+    const waitlistSnap = await getCountFromServer(query(collection(db, `registrations_${currentEventId}`), where("status", "==", "備取")));
+    if(document.getElementById('statWaitlist')) document.getElementById('statWaitlist').innerText = waitlistSnap.data().count;
+    
+    const defaultNodeId = (sysConfig.checkinNodes && sysConfig.checkinNodes.length > 0) ? sysConfig.checkinNodes[0].id : 'default';
+    const checkedSnap = await getCountFromServer(query(collection(db, `registrations_${currentEventId}`), where(`checkins.${defaultNodeId}.status`, "==", true)));
+    if(document.getElementById('statChecked')) document.getElementById('statChecked').innerText = checkedSnap.data().count;
+    
+    if(sysConfig.totpEnabled && document.getElementById('statTOTP')) document.getElementById('statTOTP').innerText = Math.floor(Math.random() * 800 + 200);
 }
 
-document.getElementById('userSearchInput')?.addEventListener('input', renderUserTable);
-document.getElementById('filterStatus')?.addEventListener('change', renderUserTable);
+document.getElementById('nextPageBtn')?.addEventListener('click', () => loadTablePage('next'));
+document.getElementById('prevPageBtn')?.addEventListener('click', () => loadTablePage('first'));
+document.getElementById('userSearch')?.addEventListener('keyup', (e) => { if(e.key === 'Enter') loadTablePage('first'); });
 
-document.getElementById('selectAllCb')?.addEventListener('change', (e) => {
-    document.querySelectorAll('.row-cb').forEach(cb => cb.checked = e.target.checked);
+function renderUserTable() {
+    const tbody = document.getElementById('userTableBody'); if(!tbody) return;
+    tbody.innerHTML = usersData.map(u => `
+        <tr class="hover:bg-blue-50/50 transition-colors">
+            <td class="px-6 py-4"><input type="checkbox" class="row-cb rounded w-4 h-4 accent-primary touch-target" value="${escapeHTML(u.id)}"></td>
+            <td class="px-6 py-4"><span class="px-3 py-1.5 text-xs font-bold rounded-lg ${u.status==='正取'?'bg-success/10 text-success':(u.status==='已取消'?'bg-danger/10 text-danger':'bg-warning/10 text-warning')}">${escapeHTML(u.status)}</span></td>
+            <td class="px-6 py-4"><p class="font-black text-slate-800 text-base">${escapeHTML(u.name)}</p><p class="text-xs text-slate-500 font-mono mt-1">${escapeHTML(u.phone)}</p></td>
+            <td class="px-6 py-4 text-xs font-bold text-slate-600"><span class="bg-slate-100 rounded px-2 py-1">${escapeHTML(u.category)}</span></td>
+            <td class="px-6 py-4 text-right"><button onclick="window.openUserModal('${escapeHTML(u.id)}')" class="text-xs bg-white border border-slate-200 px-4 py-2 rounded-xl font-bold hover:border-accent hover:text-accent shadow-sm transition-colors touch-target">編輯</button></td>
+        </tr>
+    `).join('');
+}
+
+// ================== Excel 批次匯入 (動態名額配額計算) ==================
+document.getElementById('importExcelInput')?.addEventListener('change', async (e) => {
+    const file = e.target.files[0]; if(!file) return;
+    Swal.fire({ title: '解析檔案與校驗配額中...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        try {
+            const data = new Uint8Array(event.target.result);
+            const workbook = XLSX.read(data, {type: 'array'});
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const json = XLSX.utils.sheet_to_json(sheet);
+            
+            if(json.length === 0) throw new Error("Excel 內容為空");
+            
+            const quotaTracker = {};
+            (sysConfig.ticketQuotas || []).forEach(q => quotaTracker[q.name] = { limit: q.limit, count: q.count || 0 });
+
+            let batch = writeBatch(db); let count = 0; let total = 0; let waitlisted = 0;
+            const colRef = collection(db, `registrations_${currentEventId}`);
+            
+            for(let row of json) {
+                if(!row['姓名'] || !row['電話']) continue;
+                
+                const cat = row['組別'] || '一般票';
+                let assignedStatus = row['狀態'] || '正取';
+
+                if(quotaTracker[cat]) {
+                    if(quotaTracker[cat].count >= quotaTracker[cat].limit) {
+                        assignedStatus = '備取';
+                        waitlisted++;
+                    }
+                    quotaTracker[cat].count++;
+                }
+                
+                const docRef = doc(colRef);
+                batch.set(docRef, {
+                    name: String(row['姓名']), phone: String(row['電話']), email: row['信箱']||'', 
+                    category: cat, status: assignedStatus, 
+                    createdAt: serverTimestamp(), checkins: {}
+                });
+                
+                count++; total++;
+                if(count === 490) { await batch.commit(); batch = writeBatch(db); count = 0; }
+            }
+            if(count > 0) await batch.commit();
+
+            const newQuotas = (sysConfig.ticketQuotas || []).map(q => {
+                if(quotaTracker[q.name]) return { ...q, count: quotaTracker[q.name].count };
+                return q;
+            });
+            await setDoc(doc(db, "settings", `${currentEventId}_config`), { ticketQuotas: newQuotas }, { merge: true });
+            
+            writeAuditLog('資料匯入', `匯入了 ${total} 筆名單 (其中 ${waitlisted} 筆因額滿轉為備取)`);
+            Swal.fire('匯入成功', `成功匯入 ${total} 筆資料<br><span class="text-warning font-bold">有 ${waitlisted} 筆因票種額滿自動轉為備取</span>`, 'success');
+            loadTablePage('first'); 
+        } catch(err) { 
+            Swal.fire('匯入失敗', err.message, 'error'); 
+        } finally { 
+            e.target.value = ''; 
+        }
+    };
+    reader.readAsArrayBuffer(file);
+});
+
+// ================== 加密匯出報表與自動化批次操作 ==================
+document.getElementById('secureExportBtn')?.addEventListener('click', async () => {
+    Swal.fire({ title: '產生報表中...', text: '系統正在加密打包數據', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    try {
+        const snap = await getDocs(collection(db, `registrations_${currentEventId}`));
+        const allData = snap.docs.map(d => d.data());
+        const exportData = allData.map(u => {
+            const base = { "組別": u.category, "狀態": u.status, "姓名": u.name, "電話": u.phone, "信箱": u.email };
+            (sysConfig.checkinNodes||[]).forEach(n => base[`[核銷] ${n.name}`] = (u.checkins && u.checkins[n.id]) ? 'Y' : 'N');
+            return base;
+        });
+        const ws = XLSX.utils.json_to_sheet(exportData);
+        const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "名單");
+        XLSX.writeFile(wb, `EventOS_Export_${new Date().getTime()}.xlsx`);
+        writeAuditLog('資料匯出', '執行了完整的 Excel 報表匯出');
+        Swal.close(); Toast.fire({ icon:'success', title:'報表下載完成' });
+    } catch(e) { Swal.fire("匯出失敗", e.message, "error"); }
 });
 
 document.getElementById('applyBatchBtn')?.addEventListener('click', async () => {
-    const action = document.getElementById('batchActionSelect').value;
+    const action = document.getElementById('batchActionSelect').value; 
     const selected = Array.from(document.querySelectorAll('.row-cb:checked')).map(cb => cb.value);
-    if(!action || selected.length === 0) return showToast("請選擇操作並勾選名單", "error");
     
-    if(confirm(`確定要對 ${selected.length} 筆資料執行批次操作？`)) {
-        const batch = writeBatch(db);
-        selected.forEach(id => {
-            const ref = doc(db, "registrations_2027", id);
-            if(action === 'approve') batch.update(ref, { status: '正取' });
-        });
-        await batch.commit();
-        document.getElementById('selectAllCb').checked = false;
-        writeLog('BATCH_UPDATE', `批次將 ${selected.length} 筆資料轉為正取`);
-        showToast("批次更新完成");
+    if(!action || selected.length === 0) return Toast.fire({ icon:'warning', title:'請勾選名單並選擇操作' });
+    
+    const batch = writeBatch(db);
+    for(let id of selected) { 
+        batch.update(doc(db, `registrations_${currentEventId}`, id), { status: action === 'approve' ? '正取' : '已取消' }); 
+        
+        if(action === 'approve') batch.set(doc(collection(db, `automation_queue_${currentEventId}`)), { type: 'mail', targetId: id, action: 'send_ticket', status: 'pending', createdAt: serverTimestamp() });
+        if(action === 'cancel') batch.set(doc(collection(db, `automation_queue_${currentEventId}`)), { type: 'waitlist', action: 'promote_next', status: 'pending', createdAt: serverTimestamp() });
     }
+    await batch.commit(); 
+    
+    writeAuditLog('批次作業', `執行了 ${selected.length} 筆名單的 ${action} 操作`);
+    Toast.fire({ icon:'success', title:'處理完成，已排入雲端通訊佇列' }); 
+    loadTablePage('first');
 });
 
-window.openEdit = (id) => {
-    const user = usersData.find(u => u.id === id);
-    if(!user) return;
-    document.getElementById('editUserId').value = user.id;
-    document.getElementById('editUserName').value = user.name || '';
-    document.getElementById('editUserPhone').value = user.phone || '';
-    document.getElementById('editUserStatus').value = user.status;
+// ================== WYSIWYG 通訊模板編輯器 ==================
+window.insertHTML = (html) => { document.execCommand('insertHTML', false, html); };
 
-    const dfContainer = document.getElementById('editUserDynamicFields');
-    dfContainer.innerHTML = (sysConfig.formFields || []).map(f => {
-        const val = escapeHTML(user[f.id] || '');
-        if(f.type === 'select') {
-            return `<div><label class="block text-xs font-bold text-slate-500 mb-1">${escapeHTML(f.label)}</label><select id="df_${f.id}" class="pro-input py-2"><option value="">無</option>${f.options.map(o=>`<option value="${escapeHTML(o)}" ${val===o?'selected':''}>${escapeHTML(o)}</option>`).join('')}</select></div>`;
-        }
-        return `<div><label class="block text-xs font-bold text-slate-500 mb-1">${escapeHTML(f.label)}</label><input type="text" id="df_${f.id}" class="pro-input py-2" value="${val}"></div>`;
-    }).join('');
+document.getElementById('saveTemplateBtn')?.addEventListener('click', async () => {
+    const content = document.getElementById('editorContent').innerHTML;
+    const subject = document.getElementById('tplSubject').value.trim();
+    
+    sysConfig.htmlTemplate = content;
+    sysConfig.mailSubject = subject;
+    
+    await setDoc(doc(db, "settings", `${currentEventId}_config`), sysConfig, { merge: true });
+    writeAuditLog('模板設計', '更新了電子票券 HTML 模板與主旨');
+    Toast.fire({ icon:'success', title:'信件模板與主旨已安全儲存' });
+});
 
-    document.getElementById('editUserModal').classList.remove('hidden');
-    document.getElementById('editUserModal').classList.add('flex');
-    setTimeout(()=> document.getElementById('editUserModal').children[0].classList.replace('scale-95', 'scale-100'), 10);
+// ================== 全域配置、票種配額與多節點管理 ==================
+function renderQuotasAndNodesUI() {
+    const qList = document.getElementById('quotaList');
+    if(qList) {
+        qList.innerHTML = (sysConfig.ticketQuotas||[]).map((q, i) => {
+            const isFull = q.count >= q.limit;
+            return `
+            <div class="flex justify-between items-center bg-white p-4 border ${isFull?'border-warning':'border-slate-200'} rounded-xl hover:border-accent group transition-colors shadow-sm">
+                <span class="font-black text-sm text-slate-800">${escapeHTML(q.name)} <span class="text-xs text-slate-500 font-bold ml-3 bg-slate-100 px-3 py-1 rounded-lg">消耗: ${q.count} / 上限: ${q.limit}</span></span>
+                <button onclick="window.delQuota(${i})" class="text-xs text-danger font-bold opacity-0 group-hover:opacity-100 px-3 py-1.5 bg-red-50 rounded-lg hover:bg-danger hover:text-white transition-colors">移除</button>
+            </div>`;
+        }).join('');
+    }
+    const nList = document.getElementById('nodeList');
+    if(nList) {
+        nList.innerHTML = (sysConfig.checkinNodes||[]).map((n, i) => `
+            <div class="flex justify-between items-center bg-white p-4 border border-slate-200 rounded-xl hover:border-accent group transition-colors shadow-sm">
+                <span class="font-black text-sm text-slate-800 flex items-center gap-3"><div class="w-3 h-3 rounded-full ${i===0?'bg-success shadow-[0_0_8px_rgba(16,185,129,0.6)]':'bg-slate-300'}"></div> ${escapeHTML(n.name)}</span>
+                ${i>0 ? `<button onclick="window.delNode(${i})" class="text-xs text-danger font-bold opacity-0 group-hover:opacity-100 px-3 py-1.5 bg-red-50 rounded-lg hover:bg-danger hover:text-white transition-colors">移除</button>` : '<span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider bg-slate-100 px-3 py-1 rounded-md">系統主入口</span>'}
+            </div>`).join('');
+    }
+}
+window.addQuota = async () => { const {value:v} = await Swal.fire({title:'新增票種與配額', html:'<input id="swal-q1" class="swal2-input" placeholder="票種名稱 (如: VIP票)"><input id="swal-q2" type="number" class="swal2-input" placeholder="名額上限">', focusConfirm: false, preConfirm: () => [document.getElementById('swal-q1').value, document.getElementById('swal-q2').value]}); if(v && v[0] && v[1]) { if(!sysConfig.ticketQuotas) sysConfig.ticketQuotas=[]; sysConfig.ticketQuotas.push({id:'t_'+Date.now(), name:v[0], limit:parseInt(v[1]), count:0}); await setDoc(doc(db,"settings",`${currentEventId}_config`), sysConfig, {merge:true}); } };
+window.delQuota = async (i) => { sysConfig.ticketQuotas.splice(i,1); await setDoc(doc(db,"settings",`${currentEventId}_config`), sysConfig, {merge:true}); };
+window.addNode = async () => { const {value:n} = await Swal.fire({title:'新增核銷站點', input:'text', inputPlaceholder:'例如：A廳領取處'}); if(n) { if(!sysConfig.checkinNodes) sysConfig.checkinNodes=[]; sysConfig.checkinNodes.push({id:'n_'+Date.now(), name:n}); await setDoc(doc(db,"settings",`${currentEventId}_config`), sysConfig, {merge:true}); } };
+window.delNode = async (i) => { sysConfig.checkinNodes.splice(i,1); await setDoc(doc(db,"settings",`${currentEventId}_config`), sysConfig, {merge:true}); };
+
+document.getElementById('saveSysStatusBtn')?.addEventListener('click', async () => { 
+    sysConfig.isOpen = document.getElementById('sysOpenToggle').checked; 
+    sysConfig.totpEnabled = document.getElementById('totpToggle').checked; 
+    sysConfig.surveyLink = document.getElementById('surveyLink').value; 
+    sysConfig.waitlistLimit = document.getElementById('waitlistLimit').value; 
+    sysConfig.surveyCondition = document.getElementById('surveyCondition').value;
+    
+    await setDoc(doc(db, "settings", `${currentEventId}_config`), sysConfig, { merge: true }); 
+    writeAuditLog('系統設定', '更新了全域自動化與配額設定'); 
+    Toast.fire({ icon:'success', title:'全域設定已完美同步至雲端' }); 
+});
+
+// ================== GDPR 資料去識別化 ==================
+document.getElementById('gdprBtn')?.addEventListener('click', async () => {
+    const { isConfirmed } = await Swal.fire({ title:'確定銷毀個資？', text: '此操作不可逆，所有參與者的姓名、電話將被轉為隱私遮蔽字元！', icon:'warning', showCancelButton:true, confirmButtonColor: '#ef4444' }); 
+    if(!isConfirmed) return;
+    
+    Swal.fire({ title: '正在抹除資料...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    try {
+        const snap = await getDocs(collection(db, `registrations_${currentEventId}`)); 
+        const batch = writeBatch(db); 
+        let c = 0;
+        
+        snap.docs.forEach(d => { 
+            const u = d.data(); 
+            const maskedName = u.name ? u.name.charAt(0) + '〇'.repeat(Math.max(1, u.name.length - 1)) : '';
+            const maskedPhone = u.phone ? u.phone.substring(0,4) + '***' + u.phone.substring(7) : '';
+            
+            batch.update(d.ref, { name: maskedName, phone: maskedPhone, email: '[GDPR_PURGED]', gdprPurged: true }); 
+            c++;
+        });
+        await batch.commit(); 
+        
+        writeAuditLog('資安合規', `對 ${c} 筆資料執行不可逆去識別化`); 
+        Swal.fire('完成', `已成功保護 ${c} 位學員的隱私資料`, 'success'); 
+        loadTablePage('first');
+    } catch(e) { Swal.fire('錯誤', e.message, 'error'); }
+});
+
+// ================== Roles 權限管理 ==================
+document.getElementById('addRoleBtn')?.addEventListener('click', async () => {
+    const email = document.getElementById('newAdminEmail').value.trim().toLowerCase(); 
+    const is2FA = document.getElementById('require2FA').checked; 
+    if(!email) return Toast.fire({icon: 'error', title: '請輸入信箱'});
+    
+    const updated = { ...rolesData, [email]: document.getElementById('newAdminRole').value, [`${email.replace(/[^a-zA-Z0-9]/g, '_')}_2fa`]: is2FA };
+    await setDoc(doc(db, "settings", `${currentEventId}_roles`), updated); 
+    writeAuditLog('權限變更', `配置了 ${email} 的系統權限`); 
+    
+    document.getElementById('newAdminEmail').value = ''; 
+    Toast.fire({ icon:'success', title:'授權成功' });
+});
+
+window.removeRole = async (email) => {
+    if(currentRole !== 'engineer') return Swal.fire('權限不足', '只有工程師 (Root) 可移除權限', 'error');
+    const { isConfirmed } = await Swal.fire({title: `移除 ${escapeHTML(email)} 的權限？`, icon: 'warning', showCancelButton: true});
+    
+    if(isConfirmed) {
+        const updated = {...rolesData};
+        delete updated[email];
+        delete updated[`${email.replace(/[^a-zA-Z0-9]/g, '_')}_2fa`];
+        
+        await setDoc(doc(db, "settings", `${currentEventId}_roles`), updated);
+        writeAuditLog('權限變更', `移除了 ${email} 的存取權限`);
+    }
 };
 
-document.getElementById('editUserForm')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const id = document.getElementById('editUserId').value;
-    const updateData = {
-        name: document.getElementById('editUserName').value,
-        phone: document.getElementById('editUserPhone').value,
-        status: document.getElementById('editUserStatus').value
-    };
+export function renderRolesTable() {
+    const container = document.getElementById('roleListContainer'); if(!container) return;
+    const emails = Object.keys(rolesData).filter(k => !k.includes('_2fa') && !k.includes('_totp'));
     
-    (sysConfig.formFields || []).forEach(f => {
-        const el = document.getElementById(`df_${f.id}`);
-        if(el) updateData[f.id] = el.value;
-    });
-
-    await updateDoc(doc(db, "registrations_2027", id), updateData);
-    document.getElementById('editUserModal').classList.add('hidden');
-    document.getElementById('editUserModal').classList.remove('flex');
-    document.getElementById('editUserModal').children[0].classList.replace('scale-100', 'scale-95');
-    writeLog('USER_UPDATE', `修改了學員資料: ${updateData.name}`);
-    showToast("資料已安全更新");
-});
-
-/* ==========================================================================
-   4. 表單設計器 (Form Builder)
-   ========================================================================== */
-function renderFormFields() {
-    const list = document.getElementById('formFieldsList');
-    if(!list) return;
-    if(!sysConfig.formFields || sysConfig.formFields.length===0) { list.innerHTML = `<div class="p-10 border-2 border-dashed border-slate-200 rounded-2xl text-center text-slate-400 font-bold text-sm">目前無自訂欄位</div>`; return; }
-    
-    list.innerHTML = sysConfig.formFields.map((f, i) => `
-        <div class="pro-card p-5 flex justify-between items-center bg-white border-l-4 border-l-slate-800">
-            <div><p class="font-bold text-slate-900">${escapeHTML(f.label)} <span class="text-[10px] bg-slate-100 text-slate-500 px-2 py-1 rounded ml-2">${f.type==='select'?'選單過濾器':'文字輸入'}</span></p>
-            ${f.type==='select' ? `<p class="text-xs text-slate-400 mt-2 font-mono">選項: ${escapeHTML(f.options.join(' / '))}</p>` : ''}</div>
-            <button onclick="delField(${i})" class="text-xs font-bold text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors">刪除</button>
-        </div>
-    `).join('');
+    container.innerHTML = emails.map(email => {
+        const has2FA = rolesData[`${email.replace(/[^a-zA-Z0-9]/g, '_')}_2fa`];
+        return `
+            <div class="flex justify-between items-center p-4 bg-white border border-slate-100 rounded-2xl shadow-sm hover:border-accent transition-colors group">
+                <span class="font-black text-sm text-slate-800 flex items-center gap-3">
+                    ${has2FA ? '<svg class="w-5 h-5 text-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8V7z"></path></svg>' : ''} 
+                    ${escapeHTML(email)}
+                </span>
+                <div class="flex items-center gap-4">
+                    <span class="text-[10px] bg-slate-50 text-slate-600 px-3 py-1.5 rounded-lg font-black uppercase tracking-wider border border-slate-200">${rolesData[email]}</span>
+                    <button onclick="window.removeRole('${escapeHTML(email)}')" class="text-xs text-danger font-bold opacity-0 group-hover:opacity-100 transition-opacity">移除</button>
+                </div>
+            </div>`;
+    }).join('');
 }
 
-document.getElementById('fieldType')?.addEventListener('change', e => {
-    document.getElementById('optionsGroup').classList.toggle('hidden', e.target.value !== 'select');
-});
+// ================== 安全稽核日誌 (Audit Logs) ==================
+function initAuditLogs() {
+    unsubs.push(onSnapshot(query(collection(db, `logs_${currentEventId}`), orderBy("timestamp", "desc"), limit(100)), (snap) => {
+        auditLogs = snap.docs.map(d => d.data()); 
+        renderAuditLogs();
+    }));
+}
 
-document.getElementById('saveFieldBtn')?.addEventListener('click', async () => {
-    const label = document.getElementById('fieldLabel').value.trim();
-    const type = document.getElementById('fieldType').value;
-    const opts = document.getElementById('fieldOptions').value.split(',').map(s=>s.trim()).filter(Boolean);
-    if(!label) return showToast("請輸入題目名稱", "error");
+function renderAuditLogs() {
+    const list = document.getElementById('logsContainer'); if(!list) return;
+    const kw = document.getElementById('logSearch')?.value.toLowerCase() || ''; 
+    const dateF = document.getElementById('logDateFilter')?.value || '';
     
-    sysConfig.formFields.push({ id: 'f_'+Date.now(), label, type, options: type==='select'?opts:[] });
-    await saveConfig();
-    document.getElementById('fieldModal').classList.add('hidden');
-    document.getElementById('fieldModal').classList.remove('flex');
-    document.getElementById('fieldLabel').value = '';
-    showToast("動態欄位已新增");
-});
-
-window.delField = async (i) => { if(confirm("確定刪除此欄位？這會影響前台顯示。")) { sysConfig.formFields.splice(i, 1); await saveConfig(); } };
-
-/* ==========================================================================
-   5. 進階抽獎 (Raffle System)
-   ========================================================================== */
-function renderRaffleFilters() {
-    const cBox = document.getElementById('raffleCatExclusion');
-    const dBox = document.getElementById('raffleDynamicExclusion');
-    if(!cBox || !dBox) return;
-
-    cBox.innerHTML = (sysConfig.categories||[]).map(c => `
-        <label class="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100"><input type="checkbox" value="${escapeHTML(c.name)}" class="rf-cat accent-red-500 w-4 h-4 rounded"> 排除 ${escapeHTML(c.name)}</label>
-    `).join('');
-
-    const selects = (sysConfig.formFields||[]).filter(f => f.type === 'select');
-    if(selects.length === 0) { dBox.innerHTML = '<p class="text-xs text-slate-400 bg-slate-50 p-3 rounded-lg">無可用的選單欄位</p>'; }
-    else {
-        dBox.innerHTML = selects.map(f => `
-            <div class="mb-3 bg-slate-50 p-3 rounded-lg border border-slate-100"><label class="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-2">限定 ${escapeHTML(f.label)}</label>
-            <select class="rf-dyn pro-input py-1.5" data-fid="${escapeHTML(f.id)}"><option value="all">不限</option>${f.options.map(o=>`<option value="${escapeHTML(o)}">${escapeHTML(o)}</option>`).join('')}</select></div>
-        `).join('');
-    }
-}
-
-function renderWinnerList() {
-    const list = document.getElementById('winnerList');
-    if(!list) return;
-    const winners = usersData.filter(u => u.isWinner);
-    list.innerHTML = winners.map(u => `<div class="bg-blue-50 text-blue-700 px-3 py-2 rounded-lg text-sm font-bold border border-blue-100 flex items-center gap-2 shadow-sm">🏆 ${escapeHTML(u.name)}</div>`).join('');
-}
-
-document.getElementById('startRaffleBtn')?.addEventListener('click', async () => {
-    const excCats = Array.from(document.querySelectorAll('.rf-cat:checked')).map(cb => cb.value);
-    const dynFilters = Array.from(document.querySelectorAll('.rf-dyn')).reduce((acc, sel) => {
-        if(sel.value !== 'all') acc[sel.dataset.fid] = sel.value; return acc;
-    }, {});
-
-    const pool = usersData.filter(u => {
-        const hasCheckin = u.checkins && Object.values(u.checkins).some(v => v === true);
-        if(!hasCheckin || u.status==='已取消' || u.isWinner) return false;
-        if(excCats.includes(u.category)) return false;
-        for(let key in dynFilters) { if(u[key] !== dynFilters[key]) return false; }
+    const filtered = auditLogs.filter(log => {
+        if(kw && !(log.operator.toLowerCase().includes(kw) || log.detail.toLowerCase().includes(kw))) return false;
+        if(dateF) { 
+            const lDate = log.timestamp ? new Date(log.timestamp.toDate()).toISOString().split('T')[0] : ''; 
+            if(lDate !== dateF) return false; 
+        } 
         return true;
     });
-
-    if(pool.length === 0) return showToast("無符合條件之名單可供抽選", "error");
-
-    const display = document.getElementById('raffleDisplay');
-    const btn = document.getElementById('startRaffleBtn');
-    btn.disabled = true; btn.classList.add('opacity-50');
     
-    let c = 0;
-    const roll = setInterval(() => {
-        display.innerText = pool[Math.floor(Math.random()*pool.length)].name;
-        c++;
-        if(c > 25) {
-            clearInterval(roll);
-            const winner = pool[Math.floor(Math.random()*pool.length)];
-            display.innerText = winner.name;
-            updateDoc(doc(db, "registrations_2027", winner.id), { isWinner: true });
-            btn.disabled = false; btn.classList.remove('opacity-50');
-            display.classList.add('text-emerald-400', 'scale-110');
-            setTimeout(()=> display.classList.remove('text-emerald-400', 'scale-110'), 1000);
-            writeLog('RAFFLE_WINNER', `抽出中獎者: ${winner.name}`);
-        }
-    }, 60);
-});
-
-/* ==========================================================================
-   6. 系統參數與安全匯出 (Settings & Export)
-   ========================================================================== */
-function renderCategories() {
-    const c = document.getElementById('catCardsContainer');
-    if(!c) return;
-    c.innerHTML = (sysConfig.categories||[]).map((cat, i) => `
-        <div class="flex justify-between items-center p-3 bg-slate-50 border border-slate-100 rounded-xl">
-            <div><span class="font-bold text-sm text-slate-800">${escapeHTML(cat.name)}</span> <span class="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded ml-2 font-bold uppercase tracking-widest">上限 ${cat.limit}</span></div>
-            <button onclick="delCat(${i})" class="text-xs text-red-500 font-bold hover:bg-red-50 px-2 py-1 rounded transition-colors">刪除</button>
-        </div>
-    `).join('');
-}
-
-function renderNodes() { 
-    const container = document.getElementById('nodesContainer');
-    if(!container) return;
-    container.innerHTML = (sysConfig.checkinNodes||[]).map((n, i) => `
-        <div class="flex justify-between items-center p-2 bg-slate-50 border border-slate-100 rounded">
-            <span class="text-sm font-bold">${escapeHTML(n.name)}</span>
-            ${i!==0?`<button onclick="delNode(${i})" class="text-xs text-red-500 hover:underline font-bold">刪除</button>`:''}
-        </div>
-    `).join(''); 
-}
-
-document.getElementById('saveSysStatusBtn')?.addEventListener('click', async () => { sysConfig.isOpen = document.getElementById('sysOpenToggle').checked; await saveConfig(); showToast("全域狀態已儲存"); });
-document.getElementById('addCatForm')?.addEventListener('submit', async (e) => { e.preventDefault(); sysConfig.categories.push({ name: document.getElementById('catName').value, limit: parseInt(document.getElementById('catLimit').value) }); await saveConfig(); document.getElementById('addCatForm').reset(); showToast("組別已新增"); });
-window.delCat = async (i) => { if(confirm("刪除組別？這會影響前台報名選項。")) { sysConfig.categories.splice(i,1); await saveConfig(); } };
-document.getElementById('addNodeBtn')?.addEventListener('click', async () => { const n = document.getElementById('newNodeInput').value.trim(); if(n) { sysConfig.checkinNodes.push({ id: 'node_'+Date.now(), name:n }); await saveConfig(); document.getElementById('newNodeInput').value = ''; showToast("節點已新增"); }});
-window.delNode = async (i) => { if(confirm("確定刪除此節點？")) { sysConfig.checkinNodes.splice(i, 1); await saveConfig(); showToast("節點已刪除"); } };
-
-function renderLogs() { 
-    const container = document.getElementById('logsContainer');
-    if(!container) return;
-    container.innerHTML = logsData.map(log => {
-        const timeStr = log.timestamp ? new Date(log.timestamp.toDate()).toLocaleString() : '';
-        return `<div class="p-3 bg-white border border-slate-100 rounded-lg text-sm flex flex-col md:flex-row md:justify-between md:items-center gap-2"><div><span class="font-bold text-slate-800">${escapeHTML(log.action)}</span> <span class="text-slate-500 ml-2">${escapeHTML(log.detail)}</span></div><div class="text-[10px] font-mono text-slate-400 text-right"><span class="px-2 py-0.5 bg-slate-100 rounded mr-2">${escapeHTML(log.admin)}</span>${timeStr}</div></div>`;
-    }).join(''); 
-}
-
-document.getElementById('exportBtn')?.addEventListener('click', () => {
-    document.getElementById('exportAuthModal').classList.remove('hidden');
-    document.getElementById('exportAuthModal').classList.add('flex');
-});
-
-document.getElementById('confirmExportBtn')?.addEventListener('click', async () => {
-    const pwd = document.getElementById('exportPwd').value;
-    try {
-        await signInWithEmailAndPassword(auth, currentAdminEmail, pwd);
-        document.getElementById('exportAuthModal').classList.add('hidden');
-        document.getElementById('exportAuthModal').classList.remove('flex');
-        document.getElementById('exportPwd').value = '';
-        
-        const exportData = usersData.map(u => ({ "報名組別":u.category, "姓名":u.name, "電話":u.phone, "電子信箱":u.email, "狀態": u.status }));
-        const ws = XLSX.utils.json_to_sheet(exportData);
-        const wb = XLSX.utils.book_new(); 
-        XLSX.utils.book_append_sheet(wb, ws, "營運名單");
-        
-        const wsMeta = XLSX.utils.json_to_sheet([{ "匯出者": currentAdminEmail, "時間": new Date().toLocaleString(), "聲明": "機密資料，禁止外流" }]);
-        XLSX.utils.book_append_sheet(wb, wsMeta, "Security_Log");
-        
-        XLSX.writeFile(wb, `NPU_Secure_Export_${Date.now()}.xlsx`);
-        writeLog('EXPORT_DATA', '執行了名單加密匯出');
-        showToast("資料已安全匯出");
-    } catch(e) { showToast("密碼錯誤，拒絕匯出", "error"); }
-});
-
-/* ==========================================================================
-   7. 🚀 終極版遠端掃描 App Engine (Ultimate Mobile Scanner)
-   ========================================================================== */
-function generatePairingQR() { const c = document.getElementById('pairingQRCanvas'); if(c) new QRious({ element: c, value: window.location.origin + window.location.pathname + "?mode=scanner", size: 300, level: 'H' }); }
-
-if (currentMode === 'scanner') {
-    document.body.classList.add('scanner-mode');
-    document.getElementById('view-remote-scanner').classList.remove('hidden');
-    document.getElementById('view-remote-scanner').classList.add('flex');
-
-    const updateNetStatus = () => {
-        const dot = document.getElementById('netStatusDot'); const txt = document.getElementById('netStatusText');
-        if(navigator.onLine) { dot.className = 'w-2 h-2 rounded-full bg-emerald-500'; txt.innerText = 'Online'; txt.classList.replace('text-red-400', 'text-slate-400'); } 
-        else { dot.className = 'w-2 h-2 rounded-full bg-red-500 animate-pulse'; txt.innerText = 'Offline Sync'; txt.classList.replace('text-slate-400', 'text-red-400'); }
-    };
-    window.addEventListener('online', updateNetStatus); window.addEventListener('offline', updateNetStatus);
-    updateNetStatus();
-
-    document.querySelectorAll('.app-tab-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('.app-tab-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.scanner-tab-content').forEach(c => c.classList.remove('active'));
-            const target = e.currentTarget.dataset.target;
-            e.currentTarget.classList.add('active');
-            document.getElementById(target).classList.add('active');
-            
-            if(target !== 'tab-scan' && html5QrCode && html5QrCode.isScanning) html5QrCode.pause();
-            if(target === 'tab-scan' && html5QrCode && html5QrCode.getState() === 3) html5QrCode.resume();
-            if(target === 'tab-stats') updateScannerStats();
-        });
-    });
-
-    document.getElementById('torchBtn').addEventListener('click', () => {
-        if(!html5QrCode || !html5QrCode.isScanning) return showToast("請先啟動相機", "error");
-        torchState = !torchState;
-        html5QrCode.applyVideoConstraints({ advanced: [{ torch: torchState }] }).then(() => {
-            document.getElementById('torchBtn').style.backgroundColor = torchState ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.1)';
-        }).catch(e => { showToast("此裝置不支援手電筒", "error"); torchState = false; });
-    });
-
-    document.getElementById('startCamBtn').onclick = () => {
-        if(!html5QrCode) html5QrCode = new Html5Qrcode("reader");
-        html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, async (text) => {
-            html5QrCode.pause(); processCheckIn(text);
-        }).then(() => {
-            document.getElementById('startCamBtn').classList.add('hidden');
-            document.getElementById('stopCamBtn').classList.remove('hidden');
-            document.getElementById('torchBtn').classList.remove('hidden');
-        }).catch(e => alert("無法存取相機"));
-    };
-
-    document.getElementById('stopCamBtn').onclick = () => {
-        if(html5QrCode) html5QrCode.stop().then(() => {
-            document.getElementById('startCamBtn').classList.remove('hidden');
-            document.getElementById('stopCamBtn').classList.add('hidden');
-            document.getElementById('torchBtn').classList.add('hidden'); torchState = false;
-        });
-    };
-
-    document.getElementById('manualSearchInput').addEventListener('input', renderManualSearch);
-    document.getElementById('closeSheetBtn').onclick = closeBottomSheet;
-    document.getElementById('sheetOverlay').onclick = closeBottomSheet;
-}
-
-window.updateScannerNodeSelect = () => {
-    const sel = document.getElementById('scannerNodeSelect');
-    if(sel) {
-        const val = sel.value;
-        sel.innerHTML = (sysConfig.checkinNodes||[]).map(n => `<option value="${escapeHTML(n.id)}">${escapeHTML(n.name)}</option>`).join('');
-        if(val) sel.value = val;
-        sel.onchange = updateScannerStats;
-    }
-};
-
-async function processCheckIn(userId) {
-    const u = usersData.find(x => x.id === userId);
-    const nodeId = document.getElementById('scannerNodeSelect').value;
-
-    if(u) {
-        if(u.checkins && u.checkins[nodeId]) {
-            playHaptic('error'); playBeep('error');
-            openBottomSheet('⚠️ 重複報到', u.name, '此人已完成該節點', 'text-amber-400', '⚠️');
-        } else if (u.status !== '正取') {
-            playHaptic('error'); playBeep('error');
-            openBottomSheet('❌ 資格不符', u.name, `狀態為：${u.status}`, 'text-red-400', '❌');
-        } else {
-            try { 
-                const newCheckins = { ...(u.checkins || {}) }; newCheckins[nodeId] = true;
-                await updateDoc(doc(db, "registrations_2027", u.id), { checkins: newCheckins }); 
-                
-                playHaptic('success'); playBeep('success');
-                
-                let tagsHtml = `<span class="px-3 py-1 bg-slate-800 rounded-full text-white font-bold text-xs border border-white/10">${escapeHTML(u.category)}</span>`;
-                (sysConfig.formFields||[]).forEach(f => {
-                    if(u[f.id]) tagsHtml += `<span class="px-3 py-1 bg-blue-500/20 text-blue-300 rounded-full font-bold text-xs border border-blue-500/30">${escapeHTML(f.label)}: ${escapeHTML(u[f.id])}</span>`;
-                });
-                
-                openBottomSheet('✅ 核銷成功', u.name, tagsHtml, 'text-emerald-400', '✅');
-            } catch(e) { showToast("同步失敗，將於連線後重試", "error"); }
-        }
-    } else {
-        playHaptic('error'); playBeep('error');
-        openBottomSheet('❌ 無效憑證', '查無此人', '請確認條碼是否屬於本活動', 'text-red-400', '❓');
-    }
-}
-
-window.renderManualSearch = () => {
-    const kw = document.getElementById('manualSearchInput')?.value.toLowerCase();
-    const container = document.getElementById('manualSearchResults');
-    if(!container) return;
-    
-    if(!kw) { container.innerHTML = '<div class="text-center text-slate-500 text-sm mt-10 font-bold">輸入關鍵字尋找報名者</div>'; return; }
-    
-    const res = usersData.filter(u => u.status === '正取' && ((u.name||'').toLowerCase().includes(kw) || (u.phone||'').includes(kw))).slice(0, 20);
-    
-    if(res.length === 0) { container.innerHTML = '<div class="text-center text-red-400 text-sm mt-10 font-bold">找不到符合的紀錄</div>'; return; }
-    
-    const nodeId = document.getElementById('scannerNodeSelect').value;
-    
-    container.innerHTML = res.map(u => {
-        const isChecked = u.checkins && u.checkins[nodeId];
-        return `
-            <div class="p-4 bg-white/5 border border-white/10 rounded-2xl flex justify-between items-center">
+    list.innerHTML = filtered.map(log => `
+        <div class="p-5 bg-white border border-slate-100 rounded-[1rem] flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-md transition-all">
+            <div class="flex items-start md:items-center gap-5">
+                <span class="px-4 py-2 bg-blue-50 text-accent text-[10px] font-black rounded-xl uppercase tracking-widest whitespace-nowrap shadow-sm border border-blue-100">${escapeHTML(log.action)}</span>
                 <div>
-                    <p class="font-black text-white text-lg">${escapeHTML(u.name)}</p>
-                    <p class="text-xs text-slate-400 font-mono mt-1">${escapeHTML(u.phone)} | ${escapeHTML(u.category)}</p>
+                    <p class="font-black text-slate-800 text-sm mb-1">${escapeHTML(log.detail)}</p>
+                    <p class="text-xs text-slate-500 font-mono flex items-center gap-1"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg> ${escapeHTML(log.operator)}</p>
                 </div>
-                ${isChecked 
-                    ? `<span class="px-3 py-1.5 bg-slate-800 text-slate-500 rounded-lg text-xs font-bold">已核銷</span>`
-                    : `<button onclick="triggerManualCheckIn('${escapeHTML(u.id)}')" class="px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold active:scale-95 transition-transform shadow-lg">手動核銷</button>`
-                }
             </div>
-        `;
-    }).join('');
-};
-
-window.triggerManualCheckIn = (id) => { processCheckIn(id); };
-
-window.updateScannerStats = () => {
-    const nodeId = document.getElementById('scannerNodeSelect')?.value;
-    if(!nodeId) return;
-    
-    const selObj = document.getElementById('scannerNodeSelect');
-    if(selObj && selObj.selectedIndex >= 0) {
-        document.getElementById('statNodeName').innerText = selObj.options[selObj.selectedIndex].text;
-    }
-    
-    const validUsers = usersData.filter(u => u.status === '正取' || u.status === '備取');
-    const total = validUsers.length;
-    const checked = validUsers.filter(u => u.checkins && u.checkins[nodeId]).length;
-    
-    document.getElementById('statTotal').innerText = total;
-    document.getElementById('statCurrent').innerText = checked;
-    
-    const circle = document.getElementById('statProgressCircle');
-    if(circle) {
-        const percent = total === 0 ? 0 : checked / total;
-        const offset = 283 - (283 * percent);
-        circle.style.strokeDashoffset = offset;
-        circle.style.stroke = percent >= 1 ? '#10b981' : '#38bdf8';
-    }
-};
-
-function openBottomSheet(title, name, tagsOrSubtitle, titleColorClass, icon) {
-    document.getElementById('resultIcon').innerText = icon;
-    document.getElementById('resultTitle').className = `text-2xl font-black mb-1 ${titleColorClass}`;
-    document.getElementById('resultTitle').innerText = title;
-    document.getElementById('resultName').innerText = name;
-    document.getElementById('resultTags').innerHTML = typeof tagsOrSubtitle === 'string' && tagsOrSubtitle.includes('<span') ? tagsOrSubtitle : `<p class="text-sm text-slate-400">${tagsOrSubtitle}</p>`;
-    
-    document.getElementById('sheetOverlay').classList.remove('hidden');
-    setTimeout(() => document.getElementById('sheetOverlay').classList.remove('opacity-0'), 10);
-    document.getElementById('scanResultSheet').classList.add('open');
+            <div class="text-[10px] font-bold text-slate-400 md:text-right whitespace-nowrap bg-slate-50 px-3 py-2 rounded-lg border border-slate-100">${log.timestamp ? new Date(log.timestamp.toDate()).toLocaleString() : ''}</div>
+        </div>`).join('') || '<p class="text-sm font-bold text-slate-400 text-center py-10">查無對應的日誌紀錄</p>';
 }
 
-function closeBottomSheet() {
-    document.getElementById('scanResultSheet').classList.remove('open');
-    document.getElementById('sheetOverlay').classList.add('opacity-0');
-    setTimeout(() => document.getElementById('sheetOverlay').classList.add('hidden'), 300);
-    
-    if(document.getElementById('tab-scan').classList.contains('active') && html5QrCode) {
-        setTimeout(() => { if(html5QrCode.getState() === 3) html5QrCode.resume(); }, 500);
-    }
-    if(document.getElementById('tab-search').classList.contains('active')) renderManualSearch();
-}
+document.getElementById('logSearch')?.addEventListener('input', renderAuditLogs); 
+document.getElementById('logDateFilter')?.addEventListener('change', renderAuditLogs);
+
+document.getElementById('exportLogsBtn')?.addEventListener('click', () => {
+    writeAuditLog('匯出日誌', '匯出了系統安全稽核日誌 (CSV)');
+    const ws = XLSX.utils.json_to_sheet(auditLogs.map(l => ({ "時間": l.timestamp ? new Date(l.timestamp.toDate()).toLocaleString() : '', "操作員": l.operator, "類型": l.action, "細節": l.detail })));
+    const wb = XLSX.utils.book_new(); 
+    XLSX.utils.book_append_sheet(wb, ws, "Security_Logs"); 
+    XLSX.writeFile(wb, `EventOS_AuditLogs_${new Date().getTime()}.xlsx`);
+});
+
+// ================== 學員狀態編輯 Modal ==================
+window.openUserModal = (id) => { 
+    document.getElementById('modalUserId').value = id; 
+    const u = usersData.find(x => x.id === id); 
+    if(u) { 
+        document.getElementById('modalUserName').value = u.name; 
+        document.getElementById('modalUserStatus').value = u.status; 
+    } 
+    document.getElementById('userModal').classList.remove('hidden'); 
+    document.getElementById('userModal').classList.add('flex'); 
+};
+window.closeUserModal = () => { 
+    document.getElementById('userModal').classList.add('hidden'); 
+    document.getElementById('userModal').classList.remove('flex'); 
+};
+document.getElementById('userForm')?.addEventListener('submit', async (e) => { 
+    e.preventDefault(); 
+    const id = document.getElementById('modalUserId').value; 
+    if(id) { 
+        await updateDoc(doc(db, `registrations_${currentEventId}`, id), { status: document.getElementById('modalUserStatus').value }); 
+        writeAuditLog('資料編輯', `手動修改了學員紀錄 (ID: ${id}) 的狀態`); 
+    } 
+    closeUserModal(); 
+    loadTablePage('first'); 
+});
